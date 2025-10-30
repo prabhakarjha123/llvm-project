@@ -7,9 +7,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Casting.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/User.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include <cstdlib>
 
@@ -559,6 +561,52 @@ TEST(CastingTest, assertion_check_unique_ptr) {
   EXPECT_DEATH((void)cast<Derived>(std::move(B)),
                "argument of incompatible type")
       << "Invalid cast of const ref did not cause an abort()";
+}
+
+TEST(Casting, StaticCastPredicate) {
+  std::vector<uint32_t> Values{1, 2};
+
+  EXPECT_TRUE((std::is_same_v<
+               decltype(*map_range(Values, StaticCastTo<uint64_t>).begin()),
+               uint64_t>));
+}
+
+TEST(Casting, LLVMRTTIPredicates) {
+  struct Base {
+    enum Kind { BK_Base, BK_Derived };
+    const Kind K;
+    Base(Kind K = BK_Base) : K(K) {}
+    Kind getKind() const { return K; }
+    virtual ~Base() = default;
+  };
+
+  struct Derived : Base {
+    Derived() : Base(BK_Derived) {}
+    static bool classof(const Base *B) { return B->getKind() == BK_Derived; }
+    bool Field = false;
+  };
+
+  Base B;
+  Derived D;
+
+  std::vector<Base *> RTTI{&B, &D, nullptr};
+  auto NonNull = drop_end(RTTI);
+  auto OnlyDerived = drop_begin(NonNull);
+  auto Casted = map_range(OnlyDerived, CastTo<Derived>);
+  auto DynCasted = map_range(NonNull, DynCastTo<Derived>);
+  auto DynCastedIfPresent = map_range(RTTI, DynCastIfPresentTo<Derived>);
+  auto CastedIfPresent = map_range(drop_begin(RTTI), CastIfPresentTo<Derived>);
+
+  EXPECT_THAT(Casted, testing::ElementsAre(&D));
+  EXPECT_THAT(DynCasted, testing::ElementsAre(nullptr, &D));
+  EXPECT_THAT(DynCastedIfPresent, testing::ElementsAre(nullptr, &D, nullptr));
+  EXPECT_THAT(CastedIfPresent, testing::ElementsAre(&D, nullptr));
+  for (auto *P : DynCastedIfPresent)
+    if (P) {
+      EXPECT_FALSE(P->Field);
+      P->Field = true;
+    }
+  EXPECT_TRUE(D.Field);
 }
 
 } // end namespace assertion_checks
